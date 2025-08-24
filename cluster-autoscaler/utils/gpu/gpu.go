@@ -26,6 +26,8 @@ import (
 const (
 	// ResourceNvidiaGPU is the name of the Nvidia GPU resource.
 	ResourceNvidiaGPU = "nvidia.com/gpu"
+	// ResourceIntelGPU is the name of the Intel GPU resource.
+	ResourceIntelGPU = "intel.com/gpu"
 	// ResourceDirectX is the name of the DirectX resource on windows.
 	ResourceDirectX = "microsoft.com/directx"
 	// DefaultGPUType is the type of GPU used in NAP if the user
@@ -100,22 +102,37 @@ func validateGpuType(availableGPUTypes map[string]struct{}, gpu string) string {
 // if the drivers are installed and GPU is ready to use.
 func NodeHasGpu(GPULabel string, node *apiv1.Node) bool {
 	_, hasGpuLabel := node.Labels[GPULabel]
-	gpuAllocatable, hasGpuAllocatable := node.Status.Allocatable[ResourceNvidiaGPU]
-	return hasGpuLabel || (hasGpuAllocatable && !gpuAllocatable.IsZero())
+	gpuNvidiaAllocatable, hasGpuNvidiaAllocatable := node.Status.Allocatable[ResourceNvidiaGPU]
+	gpuIntelAllocatable, hasGpuIntelAllocatable := node.Status.Allocatable[ResourceIntelGPU]
+	return hasGpuLabel || (hasGpuNvidiaAllocatable && !gpuNvidiaAllocatable.IsZero()) || (hasGpuIntelAllocatable && !gpuIntelAllocatable.IsZero())
 }
 
 // PodRequestsGpu returns true if a given pod has GPU request.
 func PodRequestsGpu(pod *apiv1.Pod) bool {
 	podRequests := podutils.PodRequests(pod)
-	_, gpuFound := podRequests[ResourceNvidiaGPU]
-	return gpuFound
+	_, gpuNvidiaFound := podRequests[ResourceNvidiaGPU]
+	_, gpuIntelFound := podRequests[ResourceIntelGPU]
+	return gpuNvidiaFound || gpuIntelFound
 }
 
 // GetNodeGPUFromCloudProvider returns the GPU the node has. Returned GPU has the GPU label of the
 // passed in cloud provider. If the node doesn't have a GPU, returns nil.
 func GetNodeGPUFromCloudProvider(provider cloudprovider.CloudProvider, node *apiv1.Node) *cloudprovider.GpuConfig {
 	gpuLabel := provider.GPULabel()
-	if NodeHasGpu(gpuLabel, node) {
+	if !NodeHasGpu(gpuLabel, node) {
+		return nil
+	}
+	// If a GPU is present, check for each specific type to return the correct resource name.
+	if _, found := node.Status.Allocatable[ResourceNvidiaGPU]; found {
+		return &cloudprovider.GpuConfig{Label: gpuLabel, Type: node.Labels[gpuLabel], ResourceName: ResourceNvidiaGPU}
+	}
+	// Add this block to check for your third-party GPU
+	if _, found := node.Status.Allocatable[ResourceIntelGPU]; found {
+		return &cloudprovider.GpuConfig{Label: gpuLabel, Type: node.Labels[gpuLabel], ResourceName: ResourceIntelGPU}
+	}
+
+	// This fallback preserves the original behavior for nodes that only have a GPU label but no allocatable resource yet.
+	if _, ok := node.Labels[gpuLabel]; ok {
 		return &cloudprovider.GpuConfig{Label: gpuLabel, Type: node.Labels[gpuLabel], ResourceName: ResourceNvidiaGPU}
 	}
 	return nil
